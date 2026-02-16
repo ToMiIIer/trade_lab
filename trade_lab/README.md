@@ -43,6 +43,28 @@ streamlit run app.py
 
 Run from the `trade_lab/` directory.
 
+## Download 3Y BTC 4h data
+
+This project can download BTCUSDT 4h candles from Binance Spot REST API and save:
+
+- `trade_lab/data/btcusdt_4h_3y.csv`
+
+Binance is used here as a **historical market data source for backtesting only**, not for live execution.
+
+1. Via Streamlit button:
+- In the sidebar, click **Download BTC 4h (3 years) from Binance**.
+- On success, the app shows rows and time range, and the new CSV becomes selectable in **Local CSV File**.
+
+2. Via CLI:
+- Run from the project root (parent of `trade_lab/`):
+
+```bash
+python -m trade_lab.tools.download_binance_klines
+```
+
+- Expected output format:
+- `Saved: .../trade_lab/data/btcusdt_4h_3y.csv  rows=...  first=...  last=...`
+
 ## Manual test steps
 
 1. Start Streamlit with `streamlit run app.py`.

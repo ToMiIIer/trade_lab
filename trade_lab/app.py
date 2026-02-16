@@ -13,10 +13,12 @@ from core.engine import BacktestEngine
 from core.storage import SQLiteStorage
 from core.types import RunConfig
 from strategies import discover_strategy_names, get_default_parameters, load_strategy
+from tools.download_binance_klines import download_btcusdt_4h_last_3y
 
 ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = ROOT_DIR / "configs/default.yaml"
 DEFAULT_DATA_PATH = ROOT_DIR / "data/sample_btc_4h.csv"
+DOWNLOADED_DATA_PATH = ROOT_DIR / "data/btcusdt_4h_3y.csv"
 DEFAULT_DB_PATH = ROOT_DIR / "runs.sqlite3"
 
 
@@ -104,6 +106,14 @@ def load_data(csv_mode: str, csv_path: str, upload) -> pd.DataFrame:
     return load_ohlcv_csv(csv_path)
 
 
+def list_local_csv_files() -> list[str]:
+    data_dir = ROOT_DIR / "data"
+    files = sorted(str(path) for path in data_dir.glob("*.csv"))
+    if str(DEFAULT_DATA_PATH) not in files:
+        files.insert(0, str(DEFAULT_DATA_PATH))
+    return files
+
+
 def main() -> None:
     st.set_page_config(page_title="Perps Strategy Lab", layout="wide")
     st.title("Perps Strategy Lab")
@@ -169,9 +179,37 @@ def main() -> None:
             )
         )
 
+        st.markdown("### Data")
+        if st.button("Download BTC 4h (3 years) from Binance"):
+            with st.spinner("Downloading BTCUSDT 4h candles from Binance..."):
+                try:
+                    summary = download_btcusdt_4h_last_3y(out_path=DOWNLOADED_DATA_PATH)
+                    st.session_state["local_csv_path"] = str(summary.saved_path)
+                    st.success(
+                        "Download complete: "
+                        f"{summary.rows} rows ({summary.first_timestamp} -> {summary.last_timestamp})."
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Download failed: {exc}")
+
         csv_mode = st.radio("CSV Input", options=["Local Path", "Upload CSV"], index=0)
-        csv_path = st.text_input("CSV File Path", value=str(DEFAULT_DATA_PATH))
-        upload = st.file_uploader("Upload OHLCV CSV", type=["csv"]) if csv_mode == "Upload CSV" else None
+        csv_path = str(DEFAULT_DATA_PATH)
+        upload = None
+        if csv_mode == "Local Path":
+            local_csv_options = list_local_csv_files()
+            preferred_csv = st.session_state.get("local_csv_path", str(DEFAULT_DATA_PATH))
+            if preferred_csv in local_csv_options:
+                default_index = local_csv_options.index(preferred_csv)
+            else:
+                default_index = 0
+            csv_path = st.selectbox(
+                "Local CSV File",
+                options=local_csv_options,
+                index=default_index,
+            )
+            st.session_state["local_csv_path"] = csv_path
+        else:
+            upload = st.file_uploader("Upload OHLCV CSV", type=["csv"])
 
         strategy_name = st.selectbox(
             "Strategy",
