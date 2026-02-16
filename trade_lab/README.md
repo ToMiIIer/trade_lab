@@ -43,27 +43,36 @@ streamlit run app.py
 
 Run from the `trade_lab/` directory.
 
-## Download 3Y BTC 4h data
-
-This project can download BTCUSDT 4h candles from Binance Spot REST API and save:
-
-- `trade_lab/data/btcusdt_4h_3y.csv`
+## Download Binance data presets
 
 Binance is used here as a **historical market data source for backtesting only**, not for live execution.
 
-1. Via Streamlit button:
-- In the sidebar, click **Download BTC 4h (3 years) from Binance**.
-- On success, the app shows rows and time range, and the new CSV becomes selectable in **Local CSV File**.
+Streamlit presets (sidebar, **Data Download**):
 
-2. Via CLI:
-- Run from the project root (parent of `trade_lab/`):
+1. **Download BTC 4h (3 years) from Binance**
+   - Saves to `trade_lab/data/btcusdt_4h_3y.csv`
+2. **Download BTC 1h (2019-2025) from Binance**
+   - Saves to `trade_lab/data/btcusdt_1h_2019_2025.csv`
+
+After download, the file appears in the local dataset selector.
+
+CLI usage:
+
+- Default behavior (same as the first preset):
 
 ```bash
-python -m trade_lab.tools.download_binance_klines
+python3 -m trade_lab.tools.download_binance_klines
 ```
 
-- Expected output format:
-- `Saved: .../trade_lab/data/btcusdt_4h_3y.csv  rows=...  first=...  last=...`
+- Explicit range/timeframe (exact command):
+
+```bash
+python3 -m trade_lab.tools.download_binance_klines --symbol BTCUSDT --interval 1h --start 2019-01-01 --end 2025-12-31 --out trade_lab/data/btcusdt_1h_2019_2025.csv
+```
+
+Expected summary format:
+
+- `Saved: ... rows=... first=... last=...`
 
 ## Parameter Sweep (one variable)
 

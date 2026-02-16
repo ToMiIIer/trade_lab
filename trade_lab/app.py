@@ -14,12 +14,13 @@ from core.engine import BacktestEngine
 from core.storage import SQLiteStorage
 from core.types import RunConfig
 from strategies import discover_strategy_names, get_default_parameters, load_strategy
-from tools.download_binance_klines import download_btcusdt_4h_last_3y
+from tools.download_binance_klines import download_binance_klines, download_btcusdt_4h_last_3y
 
 ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = ROOT_DIR / "configs/default.yaml"
 DEFAULT_DATA_PATH = ROOT_DIR / "data/sample_btc_4h.csv"
 DOWNLOADED_DATA_PATH = ROOT_DIR / "data/btcusdt_4h_3y.csv"
+DOWNLOADED_1H_2019_2025_PATH = ROOT_DIR / "data/btcusdt_1h_2019_2025.csv"
 SWEEP_DIR = ROOT_DIR / "data/sweeps"
 DEFAULT_DB_PATH = ROOT_DIR / "runs.sqlite3"
 
@@ -250,7 +251,7 @@ def main() -> None:
             )
         )
 
-        st.markdown("### Data")
+        st.markdown("### Data Download")
         if st.button("Download BTC 4h (3 years) from Binance"):
             with st.spinner("Downloading BTCUSDT 4h candles from Binance..."):
                 try:
@@ -263,6 +264,25 @@ def main() -> None:
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"Download failed: {exc}")
 
+        if st.button("Download BTC 1h (2019-2025) from Binance"):
+            with st.spinner("Downloading BTCUSDT 1h candles from Binance..."):
+                try:
+                    summary = download_binance_klines(
+                        symbol="BTCUSDT",
+                        interval="1h",
+                        start_date="2019-01-01",
+                        end_date="2025-12-31",
+                        out_path=DOWNLOADED_1H_2019_2025_PATH,
+                    )
+                    st.session_state["local_csv_path"] = str(summary.saved_path)
+                    st.success(
+                        "Download complete: "
+                        f"{summary.rows} rows ({summary.first_timestamp} -> {summary.last_timestamp})."
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    st.error(f"Download failed: {exc}")
+
+        st.markdown("### Data")
         csv_mode = st.radio("CSV Input", options=["Local Path", "Upload CSV"], index=0)
         csv_path = str(DEFAULT_DATA_PATH)
         upload = None
