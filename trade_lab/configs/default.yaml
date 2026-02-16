@@ -1,0 +1,21 @@
+symbol: BTC-PERP
+timeframe: 4h
+initial_cash: 10000.0
+risk:
+  max_leverage: 3.0
+  max_notional: null
+fees:
+  fee_rate: 0.0005
+  slippage_bps: 2.0
+strategy:
+  name: bb_rsi_atr_meanrev
+  params:
+    bb_length: 20
+    bb_std: 2.0
+    rsi_length: 14
+    atr_length: 14
+    regime_atr_pct_threshold: 0.02
+    rsi_entry: 30.0
+    rsi_exit: 70.0
+    atr_k: 2.0
+    target_notional_fraction: 0.5
