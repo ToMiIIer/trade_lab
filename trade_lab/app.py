@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -19,6 +20,7 @@ ROOT_DIR = Path(__file__).resolve().parent
 DEFAULT_CONFIG_PATH = ROOT_DIR / "configs/default.yaml"
 DEFAULT_DATA_PATH = ROOT_DIR / "data/sample_btc_4h.csv"
 DOWNLOADED_DATA_PATH = ROOT_DIR / "data/btcusdt_4h_3y.csv"
+SWEEP_DIR = ROOT_DIR / "data/sweeps"
 DEFAULT_DB_PATH = ROOT_DIR / "runs.sqlite3"
 
 
@@ -112,6 +114,75 @@ def list_local_csv_files() -> list[str]:
     if str(DEFAULT_DATA_PATH) not in files:
         files.insert(0, str(DEFAULT_DATA_PATH))
     return files
+
+
+def parse_sweep_values(raw_values: str) -> list[float]:
+    tokens = [token.strip() for token in raw_values.split(",")]
+    if not tokens or all(not token for token in tokens):
+        raise ValueError("Sweep values are empty. Use comma-separated numbers like: 1.5,2.0,2.5")
+    if any(token == "" for token in tokens):
+        raise ValueError("Sweep values include an empty item. Remove extra commas.")
+
+    parsed: list[float] = []
+    for token in tokens:
+        try:
+            value = float(token)
+        except ValueError as exc:
+            raise ValueError(f"Invalid number '{token}'. Use comma-separated floats.") from exc
+        if value <= 0:
+            raise ValueError(f"All sweep values must be > 0. Invalid value: {value}")
+        parsed.append(value)
+
+    unique_values: list[float] = []
+    for value in parsed:
+        if value not in unique_values:
+            unique_values.append(value)
+    return unique_values
+
+
+def set_sweep_parameter(
+    params: dict[str, Any],
+    parameter_label: str,
+    value: float,
+) -> dict[str, Any]:
+    updated = dict(params)
+    if parameter_label == "ATR Stop Multiplier (k)":
+        if "atr_stop_mult" in updated:
+            updated["atr_stop_mult"] = value
+        # Keep atr_k set for current strategy implementation.
+        updated["atr_k"] = value
+        return updated
+    raise ValueError(f"Unsupported sweep parameter: {parameter_label}")
+
+
+def summarize_exit_reasons(trades: pd.DataFrame) -> dict[str, int]:
+    if trades.empty or "reason" not in trades.columns:
+        return {"atr_stop_hit_exits": 0, "meanrev_exit_exits": 0, "other_exit_exits": 0}
+
+    reasons = trades["reason"].fillna("").astype(str)
+    atr_stop_hit_exits = int((reasons == "atr_stop_hit").sum())
+    meanrev_exit_exits = int((reasons == "meanrev_exit").sum())
+    other_exit_exits = int(len(reasons) - atr_stop_hit_exits - meanrev_exit_exits)
+
+    return {
+        "atr_stop_hit_exits": atr_stop_hit_exits,
+        "meanrev_exit_exits": meanrev_exit_exits,
+        "other_exit_exits": other_exit_exits,
+    }
+
+
+def build_sweep_csv_path(prefix: str = "k") -> Path:
+    SWEEP_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    base = SWEEP_DIR / f"sweep_{prefix}_{stamp}.csv"
+    if not base.exists():
+        return base
+
+    for i in range(1, 100):
+        candidate = SWEEP_DIR / f"sweep_{prefix}_{stamp}_{i:02d}.csv"
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError("Unable to allocate unique sweep CSV filename.")
 
 
 def main() -> None:
@@ -229,6 +300,17 @@ def main() -> None:
 
         run_name = st.text_input("Run Name (optional)", value="")
 
+        st.markdown("### Parameter Sweep")
+        sweep_parameter = st.selectbox(
+            "Sweep parameter",
+            options=["ATR Stop Multiplier (k)"],
+            index=0,
+        )
+        sweep_values_raw = st.text_input(
+            "Sweep values (comma-separated)",
+            value="1.5,2.0,2.5,3.0,3.5",
+        )
+
     try:
         data = load_data(csv_mode=csv_mode, csv_path=csv_path, upload=upload)
     except Exception as exc:  # noqa: BLE001
@@ -246,6 +328,7 @@ def main() -> None:
             max_value=max_date,
         )
         run_clicked = st.button("Run Backtest", type="primary")
+        run_sweep_clicked = st.button("Run Sweep")
 
     if isinstance(date_range, tuple) and len(date_range) == 2:
         start_date, end_date = date_range
@@ -289,6 +372,90 @@ def main() -> None:
                 "config": asdict(config),
             }
             st.success(f"Backtest complete. Saved as run #{run_id}.")
+
+    if run_sweep_clicked:
+        if filtered_data.empty:
+            st.error("No bars in selected date range")
+        else:
+            try:
+                sweep_values = parse_sweep_values(sweep_values_raw)
+            except ValueError as exc:
+                st.error(f"Sweep input error: {exc}")
+            else:
+                progress = st.progress(0.0, text="Starting parameter sweep...")
+                sweep_rows: list[dict[str, Any]] = []
+                total = len(sweep_values)
+
+                for idx, k_value in enumerate(sweep_values, start=1):
+                    run_params = set_sweep_parameter(strategy_params, sweep_parameter, k_value)
+                    run_label = run_name.strip() or "sweep"
+                    run_config = RunConfig(
+                        symbol=symbol,
+                        timeframe=timeframe,
+                        strategy_name=strategy_name,
+                        strategy_params=run_params,
+                        initial_cash=initial_cash,
+                        fee_rate=fee_rate,
+                        slippage_bps=slippage_bps,
+                        max_leverage=max_leverage,
+                        max_notional=max_notional_input if max_notional_input > 0 else None,
+                        long_only=True,
+                        run_name=f"{run_label}_{k_value:g}",
+                    )
+                    strategy = load_strategy(strategy_name, run_params)
+                    engine = BacktestEngine(config=run_config)
+                    result = engine.run(data=filtered_data, strategy=strategy)
+                    run_id = storage.save_run(result)
+
+                    exits = summarize_exit_reasons(result.trades)
+                    sweep_rows.append(
+                        {
+                            "run_id": run_id,
+                            "parameter": sweep_parameter,
+                            "k": k_value,
+                            "total_return": result.metrics.get("total_return", 0.0),
+                            "max_drawdown": result.metrics.get("max_drawdown", 0.0),
+                            "sharpe_approx": result.metrics.get("sharpe", 0.0),
+                            "win_rate": result.metrics.get("win_rate", 0.0),
+                            "trades": int(result.metrics.get("num_trades", 0)),
+                            "exposure": result.metrics.get("exposure", 0.0),
+                            **exits,
+                        }
+                    )
+
+                    progress.progress(
+                        idx / total,
+                        text=f"Sweep progress: {idx}/{total} runs completed",
+                    )
+
+                progress.empty()
+
+                sweep_df = pd.DataFrame(sweep_rows).sort_values(
+                    by=["sharpe_approx", "total_return"],
+                    ascending=[False, False],
+                )
+                sweep_df = sweep_df.reset_index(drop=True)
+
+                sweep_csv_path = build_sweep_csv_path(prefix="k")
+                sweep_df.to_csv(sweep_csv_path, index=False)
+
+                st.session_state["sweep_results"] = {
+                    "table": sweep_df,
+                    "path": str(sweep_csv_path),
+                }
+                st.success(
+                    f"Sweep complete: {len(sweep_df)} runs. "
+                    f"Saved CSV: {sweep_csv_path}"
+                )
+
+    sweep_results = st.session_state.get("sweep_results")
+    if sweep_results:
+        st.markdown("## Parameter Sweep Results")
+        st.caption(
+            "Sorted best-first by Sharpe (approx), then Total Return. "
+            f"Saved CSV: `{sweep_results['path']}`"
+        )
+        st.dataframe(sweep_results["table"], use_container_width=True)
 
     st.markdown("## Saved Runs")
     runs = storage.list_runs(limit=100)

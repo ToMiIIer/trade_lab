@@ -65,6 +65,33 @@ python -m trade_lab.tools.download_binance_klines
 - Expected output format:
 - `Saved: .../trade_lab/data/btcusdt_4h_3y.csv  rows=...  first=...  last=...`
 
+## Parameter Sweep (one variable)
+
+Use the sidebar section **Parameter Sweep** to run multiple backtests where only one parameter changes at a time.
+
+Current sweep option:
+
+- `ATR Stop Multiplier (k)`
+
+How to run:
+
+1. Choose your dataset, date range, strategy, fees/slippage, and base strategy parameters.
+2. In **Parameter Sweep**, enter comma-separated values (default: `1.5,2.0,2.5,3.0,3.5`).
+3. Click **Run Sweep**.
+
+What stays fixed:
+
+- dataset and selected date range
+- symbol/timeframe
+- fees/slippage and risk settings
+- all strategy parameters except the selected sweep parameter
+
+Sweep output:
+
+- Table in app sorted best-first by Sharpe (approx), then Total Return.
+- CSV saved to `trade_lab/data/sweeps/` with a timestamped name like `sweep_k_YYYYMMDD_HHMM.csv`.
+- Each sweep run is also saved to SQLite like a normal backtest run.
+
 ## Manual test steps
 
 1. Start Streamlit with `streamlit run app.py`.
