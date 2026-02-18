@@ -188,7 +188,27 @@ def set_sweep_parameter(
         # Keep atr_k set for current strategy implementation.
         updated["atr_k"] = value
         return updated
+    if parameter_label == "RSI Entry Threshold":
+        # bb_rsi_atr_meanrev strategy key
+        updated["rsi_entry"] = value
+        return updated
     raise ValueError(f"Unsupported sweep parameter: {parameter_label}")
+
+
+def default_sweep_values(parameter_label: str) -> str:
+    defaults = {
+        "ATR Stop Multiplier (k)": "1.5,2.0,2.5,3.0,3.5",
+        "RSI Entry Threshold": "15,20,25,30,35",
+    }
+    return defaults.get(parameter_label, "1.5,2.0,2.5,3.0,3.5")
+
+
+def sweep_file_prefix(parameter_label: str) -> str:
+    if parameter_label == "ATR Stop Multiplier (k)":
+        return "k"
+    if parameter_label == "RSI Entry Threshold":
+        return "rsi_entry"
+    return "param"
 
 
 def summarize_exit_reasons(trades: pd.DataFrame) -> dict[str, int]:
@@ -356,14 +376,20 @@ def main() -> None:
         run_name = st.text_input("Run Name (optional)", value="")
 
         st.markdown("### Parameter Sweep")
+        sweep_options = ["ATR Stop Multiplier (k)", "RSI Entry Threshold"]
         sweep_parameter = st.selectbox(
             "Sweep parameter",
-            options=["ATR Stop Multiplier (k)"],
+            options=sweep_options,
             index=0,
         )
+        if "sweep_values_input" not in st.session_state:
+            st.session_state["sweep_values_input"] = default_sweep_values(sweep_parameter)
+        if st.session_state.get("sweep_values_parameter") != sweep_parameter:
+            st.session_state["sweep_values_input"] = default_sweep_values(sweep_parameter)
+            st.session_state["sweep_values_parameter"] = sweep_parameter
         sweep_values_raw = st.text_input(
             "Sweep values (comma-separated)",
-            value="1.5,2.0,2.5,3.0,3.5",
+            key="sweep_values_input",
         )
 
     try:
@@ -447,8 +473,8 @@ def main() -> None:
                 sweep_rows: list[dict[str, Any]] = []
                 total = len(sweep_values)
 
-                for idx, k_value in enumerate(sweep_values, start=1):
-                    run_params = set_sweep_parameter(strategy_params, sweep_parameter, k_value)
+                for idx, sweep_value in enumerate(sweep_values, start=1):
+                    run_params = set_sweep_parameter(strategy_params, sweep_parameter, sweep_value)
                     run_label = run_name.strip() or "sweep"
                     run_config = RunConfig(
                         symbol=symbol,
@@ -461,7 +487,7 @@ def main() -> None:
                         max_leverage=max_leverage,
                         max_notional=max_notional_input if max_notional_input > 0 else None,
                         long_only=True,
-                        run_name=f"{run_label}_{k_value:g}",
+                        run_name=f"{run_label}_{sweep_value:g}",
                     )
                     strategy = load_strategy(strategy_name, run_params)
                     engine = BacktestEngine(config=run_config)
@@ -469,19 +495,24 @@ def main() -> None:
                     run_id = storage.save_run(result)
 
                     exits = summarize_exit_reasons(result.trades)
+                    row: dict[str, Any] = {
+                        "run_id": run_id,
+                        "parameter": sweep_parameter,
+                        "sweep_value": sweep_value,
+                        "total_return": result.metrics.get("total_return", 0.0),
+                        "max_drawdown": result.metrics.get("max_drawdown", 0.0),
+                        "sharpe_approx": result.metrics.get("sharpe", 0.0),
+                        "win_rate": result.metrics.get("win_rate", 0.0),
+                        "trades": int(result.metrics.get("num_trades", 0)),
+                        "exposure": result.metrics.get("exposure", 0.0),
+                        **exits,
+                    }
+                    if sweep_parameter == "ATR Stop Multiplier (k)":
+                        row["k"] = sweep_value
+                    elif sweep_parameter == "RSI Entry Threshold":
+                        row["rsi_entry"] = sweep_value
                     sweep_rows.append(
-                        {
-                            "run_id": run_id,
-                            "parameter": sweep_parameter,
-                            "k": k_value,
-                            "total_return": result.metrics.get("total_return", 0.0),
-                            "max_drawdown": result.metrics.get("max_drawdown", 0.0),
-                            "sharpe_approx": result.metrics.get("sharpe", 0.0),
-                            "win_rate": result.metrics.get("win_rate", 0.0),
-                            "trades": int(result.metrics.get("num_trades", 0)),
-                            "exposure": result.metrics.get("exposure", 0.0),
-                            **exits,
-                        }
+                        row
                     )
 
                     progress.progress(
@@ -497,7 +528,7 @@ def main() -> None:
                 )
                 sweep_df = sweep_df.reset_index(drop=True)
 
-                sweep_csv_path = build_sweep_csv_path(prefix="k")
+                sweep_csv_path = build_sweep_csv_path(prefix=sweep_file_prefix(sweep_parameter))
                 sweep_df.to_csv(sweep_csv_path, index=False)
 
                 st.session_state["sweep_results"] = {
