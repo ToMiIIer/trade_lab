@@ -109,6 +109,36 @@ def load_defaults() -> dict[str, Any]:
 def render_strategy_parameters(widget_prefix: str, defaults: dict[str, Any]) -> dict[str, Any]:
     params: dict[str, Any] = {}
     for key, value in defaults.items():
+        if key == "use_adx_filter":
+            params[key] = st.checkbox(
+                "Enable ADX filter",
+                value=bool(value),
+                key=f"{widget_prefix}_{key}",
+            )
+            continue
+        if key == "adx_length":
+            params[key] = int(
+                st.number_input(
+                    "ADX length",
+                    min_value=1,
+                    value=int(value),
+                    step=1,
+                    key=f"{widget_prefix}_{key}",
+                )
+            )
+            continue
+        if key == "adx_max":
+            params[key] = float(
+                st.number_input(
+                    "ADX max",
+                    min_value=0.0,
+                    value=float(value),
+                    format="%.4f",
+                    key=f"{widget_prefix}_{key}",
+                )
+            )
+            continue
+
         label = key.replace("_", " ").title()
         widget_key = f"{widget_prefix}_{key}"
         if isinstance(value, bool):

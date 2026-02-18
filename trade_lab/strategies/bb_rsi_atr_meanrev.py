@@ -28,6 +28,9 @@ class Strategy(BaseStrategy):
             "bb_std": 2.0,
             "rsi_length": 14,
             "atr_length": 14,
+            "adx_length": 14,
+            "adx_max": 20.0,
+            "use_adx_filter": True,
             "regime_atr_pct_threshold": 0.02,
             "rsi_entry": 30.0,
             "rsi_exit": 70.0,
@@ -54,6 +57,12 @@ class Strategy(BaseStrategy):
             close=data["close"],
             length=int(params["atr_length"]),
         )
+        adx_series = _adx(
+            high=data["high"],
+            low=data["low"],
+            close=data["close"],
+            length=int(params["adx_length"]),
+        )
 
         indicators = pd.DataFrame(
             {
@@ -61,6 +70,7 @@ class Strategy(BaseStrategy):
                 "bb_lower": bb["bb_lower"],
                 "rsi": rsi_series,
                 "atr": atr_series,
+                "adx": adx_series,
                 "atr_pct": atr_series / data["close"].replace(0, pd.NA),
             }
         )
@@ -82,12 +92,16 @@ class Strategy(BaseStrategy):
         stop_hit = bool(state.get("atr_stop_hit", False))
 
         regime_ok = float(signal["atr_pct"]) <= float(params["regime_atr_pct_threshold"])
+        adx_ok = (not bool(params["use_adx_filter"])) or (
+            float(signal["adx"]) <= float(params["adx_max"])
+        )
 
         if position.quantity <= 0:
             long_entry = (
                 bar.close <= float(signal["bb_lower"])
                 and float(signal["rsi"]) < float(params["rsi_entry"])
                 and regime_ok
+                and adx_ok
             )
             if long_entry:
                 target_notional = max(0.0, equity * float(params["target_notional_fraction"]))
@@ -109,3 +123,35 @@ class Strategy(BaseStrategy):
             return TargetPosition(target_qty=0.0, reason="meanrev_exit")
 
         return TargetPosition(target_qty=float(position.quantity), reason="hold")
+
+
+def _adx(
+    high: pd.Series,
+    low: pd.Series,
+    close: pd.Series,
+    length: int = 14,
+) -> pd.Series:
+    up_move = high.diff()
+    down_move = low.shift(1) - low
+
+    plus_dm = up_move.where((up_move > down_move) & (up_move > 0), 0.0)
+    minus_dm = down_move.where((down_move > up_move) & (down_move > 0), 0.0)
+
+    prev_close = close.shift(1)
+    true_range = pd.concat(
+        [
+            (high - low).abs(),
+            (high - prev_close).abs(),
+            (low - prev_close).abs(),
+        ],
+        axis=1,
+    ).max(axis=1)
+
+    tr_smooth = true_range.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
+    plus_dm_smooth = plus_dm.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
+    minus_dm_smooth = minus_dm.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
+
+    plus_di = 100 * (plus_dm_smooth / tr_smooth.replace(0, pd.NA))
+    minus_di = 100 * (minus_dm_smooth / tr_smooth.replace(0, pd.NA))
+    dx = 100 * ((plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, pd.NA))
+    return dx.ewm(alpha=1 / length, adjust=False, min_periods=length).mean()
