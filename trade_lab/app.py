@@ -16,13 +16,14 @@ from core.types import RunConfig
 from strategies import discover_strategy_names, get_default_parameters, load_strategy
 from tools.download_binance_klines import download_binance_klines, download_btcusdt_4h_last_3y
 
-ROOT_DIR = Path(__file__).resolve().parent
-DEFAULT_CONFIG_PATH = ROOT_DIR / "configs/default.yaml"
-DEFAULT_DATA_PATH = ROOT_DIR / "data/sample_btc_4h.csv"
-DOWNLOADED_DATA_PATH = ROOT_DIR / "data/btcusdt_4h_3y.csv"
-DOWNLOADED_1H_2019_2025_PATH = ROOT_DIR / "data/btcusdt_1h_2019_2025.csv"
-SWEEP_DIR = ROOT_DIR / "data/sweeps"
-DEFAULT_DB_PATH = ROOT_DIR / "runs.sqlite3"
+BASE_DIR = Path(__file__).resolve().parent
+DATA_DIR = BASE_DIR / "data"
+SWEEPS_DIR = DATA_DIR / "sweeps"
+DEFAULT_CONFIG_PATH = BASE_DIR / "configs/default.yaml"
+DEFAULT_DATA_PATH = DATA_DIR / "sample_btc_4h.csv"
+DOWNLOADED_DATA_PATH = DATA_DIR / "btcusdt_4h_3y.csv"
+DOWNLOADED_1H_2019_2025_PATH = DATA_DIR / "btcusdt_1h_2019_2025.csv"
+DEFAULT_DB_PATH = BASE_DIR / "runs.sqlite3"
 
 
 def load_defaults() -> dict[str, Any]:
@@ -113,8 +114,7 @@ def load_data(csv_mode: str, csv_path: str, upload) -> pd.DataFrame:
 
 
 def list_local_csv_files() -> list[str]:
-    data_dir = ROOT_DIR / "data"
-    files = sorted(str(path) for path in data_dir.glob("*.csv"))
+    files = sorted(str(path) for path in DATA_DIR.glob("*.csv"))
     if str(DEFAULT_DATA_PATH) not in files:
         files.insert(0, str(DEFAULT_DATA_PATH))
     return files
@@ -228,14 +228,14 @@ def summarize_exit_reasons(trades: pd.DataFrame) -> dict[str, int]:
 
 
 def build_sweep_csv_path(prefix: str = "k") -> Path:
-    SWEEP_DIR.mkdir(parents=True, exist_ok=True)
+    SWEEPS_DIR.mkdir(parents=True, exist_ok=True)
     stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
-    base = SWEEP_DIR / f"sweep_{prefix}_{stamp}.csv"
+    base = SWEEPS_DIR / f"sweep_{prefix}_{stamp}.csv"
     if not base.exists():
         return base
 
     for i in range(1, 100):
-        candidate = SWEEP_DIR / f"sweep_{prefix}_{stamp}_{i:02d}.csv"
+        candidate = SWEEPS_DIR / f"sweep_{prefix}_{stamp}_{i:02d}.csv"
         if not candidate.exists():
             return candidate
     raise RuntimeError("Unable to allocate unique sweep CSV filename.")
@@ -307,6 +307,7 @@ def main() -> None:
         )
 
         st.markdown("### Data Download")
+        st.caption(f"Data directory: {DATA_DIR.resolve()}")
         if st.button("Download BTC 4h (3 years) from Binance"):
             with st.spinner("Downloading BTCUSDT 4h candles from Binance..."):
                 try:
@@ -343,7 +344,16 @@ def main() -> None:
         upload = None
         if csv_mode == "Local Path":
             local_csv_options = list_local_csv_files()
-            preferred_csv = st.session_state.get("local_csv_path", str(DEFAULT_DATA_PATH))
+            preferred_csv = st.session_state.get("local_csv_path")
+            if not preferred_csv:
+                for candidate in [
+                    str(DOWNLOADED_1H_2019_2025_PATH),
+                    str(DOWNLOADED_DATA_PATH),
+                    str(DEFAULT_DATA_PATH),
+                ]:
+                    if candidate in local_csv_options:
+                        preferred_csv = candidate
+                        break
             if preferred_csv in local_csv_options:
                 default_index = local_csv_options.index(preferred_csv)
             else:
