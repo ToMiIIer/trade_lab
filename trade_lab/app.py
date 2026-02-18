@@ -68,8 +68,11 @@ def render_result(
     equity_curve: pd.DataFrame,
     trades: pd.DataFrame,
     config: dict[str, Any],
+    timeframe_display: str | None = None,
 ) -> None:
     st.subheader(title)
+    if timeframe_display:
+        st.caption(f"Timeframe: {timeframe_display}")
     render_metrics(metrics)
 
     if equity_curve.empty:
@@ -115,6 +118,38 @@ def list_local_csv_files() -> list[str]:
     if str(DEFAULT_DATA_PATH) not in files:
         files.insert(0, str(DEFAULT_DATA_PATH))
     return files
+
+
+def infer_timeframe_label(timestamps: pd.Series) -> str:
+    series = pd.to_datetime(timestamps, errors="coerce").dropna().sort_values()
+    if len(series) < 2:
+        return "unknown"
+
+    deltas_sec = series.diff().dt.total_seconds().dropna()
+    if deltas_sec.empty:
+        return "unknown"
+
+    median_delta = float(deltas_sec.median())
+    known = {
+        5 * 60: "5m",
+        15 * 60: "15m",
+        30 * 60: "30m",
+        60 * 60: "1h",
+        2 * 60 * 60: "2h",
+        4 * 60 * 60: "4h",
+        24 * 60 * 60: "1d",
+    }
+    closest_sec = min(known.keys(), key=lambda x: abs(x - median_delta))
+    tolerance = max(60.0, closest_sec * 0.10)
+    if abs(closest_sec - median_delta) <= tolerance:
+        return known[closest_sec]
+
+    minutes = max(1, int(round(median_delta / 60)))
+    if minutes % (24 * 60) == 0:
+        return f"{minutes // (24 * 60)}d"
+    if minutes % 60 == 0:
+        return f"{minutes // 60}h"
+    return f"{minutes}m"
 
 
 def parse_sweep_values(raw_values: str) -> list[float]:
@@ -207,7 +242,7 @@ def main() -> None:
         st.header("Backtest Inputs")
 
         symbol = st.text_input("Symbol", value=defaults.get("symbol", "BTC-PERP"))
-        timeframe = st.selectbox("Timeframe", options=["4h"], index=0)
+        timeframe = "4h"
         initial_cash = float(
             st.number_input(
                 "Initial Equity",
@@ -356,10 +391,13 @@ def main() -> None:
         start_date = end_date = date_range
 
     filtered_data = filter_date_range(data, start=start_date, end=end_date)
+    inferred_timeframe = infer_timeframe_label(filtered_data["timestamp"])
+    timeframe_display = f"{inferred_timeframe} (inferred)"
 
     st.markdown(
         f"Loaded **{len(filtered_data)}** bars from `{pd.Timestamp(filtered_data['timestamp'].min())}` to `{pd.Timestamp(filtered_data['timestamp'].max())}`"
     )
+    st.caption(f"Timeframe: {timeframe_display}")
 
     if run_clicked:
         if filtered_data.empty:
@@ -382,6 +420,8 @@ def main() -> None:
             engine = BacktestEngine(config=config)
             result = engine.run(data=filtered_data, strategy=strategy)
             run_id = storage.save_run(result)
+            config_display = asdict(config)
+            config_display["timeframe"] = timeframe_display
 
             st.session_state["active_view"] = {
                 "source": "new",
@@ -389,7 +429,8 @@ def main() -> None:
                 "metrics": result.metrics,
                 "equity_curve": result.equity_curve,
                 "trades": result.trades,
-                "config": asdict(config),
+                "config": config_display,
+                "timeframe_display": timeframe_display,
             }
             st.success(f"Backtest complete. Saved as run #{run_id}.")
 
@@ -482,7 +523,10 @@ def main() -> None:
     if runs.empty:
         st.info("No saved runs yet.")
     else:
-        st.dataframe(runs, use_container_width=True)
+        runs_display = runs.copy()
+        if "timeframe" in runs_display.columns:
+            runs_display["timeframe"] = timeframe_display
+        st.dataframe(runs_display, use_container_width=True)
         selected_run_id = st.selectbox(
             "Open run",
             options=runs["id"].astype(int).tolist(),
@@ -490,13 +534,21 @@ def main() -> None:
         )
         if st.button("Open Selected Run"):
             loaded = storage.load_run(int(selected_run_id))
+            loaded_timeframe_display = "unknown (inferred)"
+            if not loaded["equity_curve"].empty and "timestamp" in loaded["equity_curve"].columns:
+                loaded_timeframe_display = (
+                    f"{infer_timeframe_label(loaded['equity_curve']['timestamp'])} (inferred)"
+                )
+            loaded_config = dict(loaded["config"])
+            loaded_config["timeframe"] = loaded_timeframe_display
             st.session_state["active_view"] = {
                 "source": "saved",
                 "run_id": int(selected_run_id),
                 "metrics": loaded["metrics"],
                 "equity_curve": loaded["equity_curve"],
                 "trades": loaded["trades"],
-                "config": loaded["config"],
+                "config": loaded_config,
+                "timeframe_display": loaded_timeframe_display,
             }
 
     active_view = st.session_state.get("active_view")
@@ -507,6 +559,7 @@ def main() -> None:
             equity_curve=active_view["equity_curve"],
             trades=active_view["trades"],
             config=active_view["config"],
+            timeframe_display=active_view.get("timeframe_display"),
         )
 
 

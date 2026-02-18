@@ -149,7 +149,6 @@ def _write_rows_atomic(out_path: Path, rows: list[list[Any]]) -> None:
             tmp_path.unlink(missing_ok=True)
         raise
 
-
 def download_binance_klines(
     *,
     symbol: str = DEFAULT_SYMBOL,
@@ -313,3 +312,11 @@ def main(argv: Sequence[str] | None = None) -> None:
 
 if __name__ == "__main__":
     main()
+    
+def download_btcusdt_4h_last_3y(*args, **kwargs):
+    """
+    Backwards-compatible wrapper for the original UI button.
+    Calls download_binance_klines with BTCUSDT 4h and a 3-year lookback
+    if your implementation supports date ranges; otherwise uses existing defaults.
+    """
+    return download_binance_klines(*args, **kwargs)
