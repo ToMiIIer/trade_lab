@@ -74,6 +74,22 @@ SWEEP_OPTIONS: dict[str, dict[str, Any]] = {
         "allow_zero": False,
         "default_values": "7,10,14,21",
     },
+    "ADX length": {
+        "slug": "adx_length",
+        "target": "strategy",
+        "keys": ["adx_length"],
+        "as_int": True,
+        "allow_zero": False,
+        "default_values": "7,14,21,28",
+    },
+    "ADX max": {
+        "slug": "adx_max",
+        "target": "strategy",
+        "keys": ["adx_max"],
+        "as_int": False,
+        "allow_zero": False,
+        "default_values": "15,20,25,30",
+    },
     "Regime ATR % Threshold": {
         "slug": "regime_atr_pct_threshold",
         "target": "strategy",
