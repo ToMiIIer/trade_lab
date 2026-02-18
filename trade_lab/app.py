@@ -9,7 +9,7 @@ import pandas as pd
 import streamlit as st
 import yaml
 
-from core.data_io import filter_date_range, load_ohlcv_csv, prepare_ohlcv_dataframe
+from core.data_io import filter_date_range, load_ohlcv_csv
 from core.engine import BacktestEngine
 from core.storage import SQLiteStorage
 from core.types import RunConfig
@@ -181,17 +181,14 @@ def render_result(
         st.json(config)
 
 
-def load_data(csv_mode: str, csv_path: str, upload) -> pd.DataFrame:
-    if csv_mode == "Upload CSV" and upload is not None:
-        uploaded_df = pd.read_csv(upload)
-        return prepare_ohlcv_dataframe(uploaded_df)
+def load_data(csv_path: str) -> pd.DataFrame:
     return load_ohlcv_csv(csv_path)
 
 
-def list_local_csv_files() -> list[str]:
-    files = sorted(str(path) for path in DATA_DIR.glob("*.csv"))
-    if str(DEFAULT_DATA_PATH) not in files:
-        files.insert(0, str(DEFAULT_DATA_PATH))
+def list_local_csv_files() -> list[Path]:
+    files = sorted(DATA_DIR.glob("*.csv"), key=lambda p: p.name.lower())
+    if not files and DEFAULT_DATA_PATH.exists():
+        files = [DEFAULT_DATA_PATH]
     return files
 
 
@@ -456,34 +453,28 @@ def main() -> None:
                 except Exception as exc:  # noqa: BLE001
                     st.error(f"Download failed: {exc}")
 
-        st.markdown("### Data")
-        csv_mode = st.radio("CSV Input", options=["Local Path", "Upload CSV"], index=0)
+        st.markdown("### Local CSV File")
+        local_csv_files = list_local_csv_files()
         csv_path = str(DEFAULT_DATA_PATH)
-        upload = None
-        if csv_mode == "Local Path":
-            local_csv_options = list_local_csv_files()
+        if not local_csv_files:
+            st.error(f"No CSV files found in: {DATA_DIR.resolve()}")
+        else:
+            local_csv_options = [str(path) for path in local_csv_files]
             preferred_csv = st.session_state.get("local_csv_path")
-            if not preferred_csv:
-                for candidate in [
-                    str(DOWNLOADED_1H_2019_2025_PATH),
-                    str(DOWNLOADED_DATA_PATH),
-                    str(DEFAULT_DATA_PATH),
-                ]:
-                    if candidate in local_csv_options:
-                        preferred_csv = candidate
-                        break
-            if preferred_csv in local_csv_options:
-                default_index = local_csv_options.index(preferred_csv)
-            else:
-                default_index = 0
+            if preferred_csv not in local_csv_options:
+                preferred_csv = (
+                    str(DOWNLOADED_1H_2019_2025_PATH)
+                    if str(DOWNLOADED_1H_2019_2025_PATH) in local_csv_options
+                    else local_csv_options[0]
+                )
+            default_index = local_csv_options.index(preferred_csv)
             csv_path = st.selectbox(
-                "Local CSV File",
+                "Choose dataset",
                 options=local_csv_options,
                 index=default_index,
+                format_func=lambda p: Path(p).name,
             )
             st.session_state["local_csv_path"] = csv_path
-        else:
-            upload = st.file_uploader("Upload OHLCV CSV", type=["csv"])
 
         strategy_name = st.selectbox(
             "Strategy",
@@ -598,7 +589,7 @@ def main() -> None:
             )
 
     try:
-        data = load_data(csv_mode=csv_mode, csv_path=csv_path, upload=upload)
+        data = load_data(csv_path=csv_path)
     except Exception as exc:  # noqa: BLE001
         st.error(f"Failed to load data: {exc}")
         return
@@ -629,6 +620,7 @@ def main() -> None:
     st.markdown(
         f"Loaded **{len(filtered_data)}** bars from `{pd.Timestamp(filtered_data['timestamp'].min())}` to `{pd.Timestamp(filtered_data['timestamp'].max())}`"
     )
+    st.caption(f"Selected file: `{Path(csv_path).name}`")
     st.caption(f"Timeframe: {timeframe_display}")
 
     if run_clicked:
