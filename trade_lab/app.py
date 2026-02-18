@@ -25,6 +25,81 @@ DOWNLOADED_DATA_PATH = DATA_DIR / "btcusdt_4h_3y.csv"
 DOWNLOADED_1H_2019_2025_PATH = DATA_DIR / "btcusdt_1h_2019_2025.csv"
 DEFAULT_DB_PATH = BASE_DIR / "runs.sqlite3"
 
+SWEEP_OPTIONS: dict[str, dict[str, Any]] = {
+    "ATR Stop Multiplier (k)": {
+        "slug": "k",
+        "target": "strategy",
+        "keys": ["atr_k", "atr_stop_mult"],
+        "as_int": False,
+        "allow_zero": False,
+        "default_values": "1.5,2.0,2.5,3.0,3.5",
+    },
+    "RSI Entry Threshold": {
+        "slug": "rsi_entry",
+        "target": "strategy",
+        "keys": ["rsi_entry"],
+        "as_int": False,
+        "allow_zero": False,
+        "default_values": "15,20,25,30,35",
+    },
+    "RSI Exit Threshold": {
+        "slug": "rsi_exit",
+        "target": "strategy",
+        "keys": ["rsi_exit"],
+        "as_int": False,
+        "allow_zero": False,
+        "default_values": "60,65,70,75,80",
+    },
+    "Bollinger Length": {
+        "slug": "bb_length",
+        "target": "strategy",
+        "keys": ["bb_length"],
+        "as_int": True,
+        "allow_zero": False,
+        "default_values": "10,15,20,25,30",
+    },
+    "Bollinger StdDev (multiplier)": {
+        "slug": "bb_std",
+        "target": "strategy",
+        "keys": ["bb_std"],
+        "as_int": False,
+        "allow_zero": False,
+        "default_values": "1.5,2.0,2.5,3.0",
+    },
+    "ATR Length": {
+        "slug": "atr_length",
+        "target": "strategy",
+        "keys": ["atr_length"],
+        "as_int": True,
+        "allow_zero": False,
+        "default_values": "7,10,14,21",
+    },
+    "Regime ATR % Threshold": {
+        "slug": "regime_atr_pct_threshold",
+        "target": "strategy",
+        "keys": ["regime_atr_pct_threshold"],
+        "as_int": False,
+        "allow_zero": False,
+        "default_values": "0.005,0.01,0.015,0.02",
+    },
+    "Fees (fee_rate)": {
+        "slug": "fee_rate",
+        "target": "config",
+        "keys": ["fee_rate"],
+        "as_int": False,
+        "allow_zero": True,
+        "default_values": "0.0002,0.0005,0.0008,0.001",
+    },
+    "Slippage (bps)": {
+        "slug": "slippage_bps",
+        "target": "config",
+        "keys": ["slippage_bps"],
+        "as_int": False,
+        "allow_zero": True,
+        "default_values": "0.5,1,2,3,5",
+    },
+}
+
 
 def load_defaults() -> dict[str, Any]:
     with DEFAULT_CONFIG_PATH.open("r", encoding="utf-8") as f:
@@ -152,7 +227,12 @@ def infer_timeframe_label(timestamps: pd.Series) -> str:
     return f"{minutes}m"
 
 
-def parse_sweep_values(raw_values: str) -> list[float]:
+def parse_sweep_values(
+    raw_values: str,
+    *,
+    as_int: bool = False,
+    allow_zero: bool = False,
+) -> list[float]:
     tokens = [token.strip() for token in raw_values.split(",")]
     if not tokens or all(not token for token in tokens):
         raise ValueError("Sweep values are empty. Use comma-separated numbers like: 1.5,2.0,2.5")
@@ -165,8 +245,16 @@ def parse_sweep_values(raw_values: str) -> list[float]:
             value = float(token)
         except ValueError as exc:
             raise ValueError(f"Invalid number '{token}'. Use comma-separated floats.") from exc
-        if value <= 0:
-            raise ValueError(f"All sweep values must be > 0. Invalid value: {value}")
+        if as_int:
+            if not value.is_integer():
+                raise ValueError(f"Value '{token}' must be a whole number.")
+            value = float(int(value))
+        if allow_zero:
+            if value < 0:
+                raise ValueError(f"All sweep values must be >= 0. Invalid value: {value}")
+        else:
+            if value <= 0:
+                raise ValueError(f"All sweep values must be > 0. Invalid value: {value}")
         parsed.append(value)
 
     unique_values: list[float] = []
@@ -176,54 +264,68 @@ def parse_sweep_values(raw_values: str) -> list[float]:
     return unique_values
 
 
-def set_sweep_parameter(
-    params: dict[str, Any],
-    parameter_label: str,
-    value: float,
-) -> dict[str, Any]:
-    updated = dict(params)
-    if parameter_label == "ATR Stop Multiplier (k)":
-        if "atr_stop_mult" in updated:
-            updated["atr_stop_mult"] = value
-        # Keep atr_k set for current strategy implementation.
-        updated["atr_k"] = value
-        return updated
-    if parameter_label == "RSI Entry Threshold":
-        # bb_rsi_atr_meanrev strategy key
-        updated["rsi_entry"] = value
-        return updated
-    raise ValueError(f"Unsupported sweep parameter: {parameter_label}")
+def get_sweep_option(parameter_label: str) -> dict[str, Any]:
+    option = SWEEP_OPTIONS.get(parameter_label)
+    if option is None:
+        raise ValueError(f"Unsupported sweep parameter: {parameter_label}")
+    return option
 
 
 def default_sweep_values(parameter_label: str) -> str:
-    defaults = {
-        "ATR Stop Multiplier (k)": "1.5,2.0,2.5,3.0,3.5",
-        "RSI Entry Threshold": "15,20,25,30,35",
-    }
-    return defaults.get(parameter_label, "1.5,2.0,2.5,3.0,3.5")
+    return str(get_sweep_option(parameter_label)["default_values"])
 
 
 def sweep_file_prefix(parameter_label: str) -> str:
-    if parameter_label == "ATR Stop Multiplier (k)":
-        return "k"
-    if parameter_label == "RSI Entry Threshold":
-        return "rsi_entry"
-    return "param"
+    return str(get_sweep_option(parameter_label)["slug"])
+
+
+def apply_sweep_value(
+    *,
+    strategy_params: dict[str, Any],
+    fee_rate: float,
+    slippage_bps: float,
+    parameter_label: str,
+    sweep_value: float,
+) -> tuple[dict[str, Any], float, float]:
+    option = get_sweep_option(parameter_label)
+    value: float | int = int(sweep_value) if option["as_int"] else float(sweep_value)
+
+    updated_strategy_params = dict(strategy_params)
+    updated_fee_rate = float(fee_rate)
+    updated_slippage_bps = float(slippage_bps)
+
+    if option["target"] == "strategy":
+        for key in option["keys"]:
+            if key == "atr_stop_mult":
+                if key in updated_strategy_params:
+                    updated_strategy_params[key] = value
+            else:
+                updated_strategy_params[key] = value
+    elif option["target"] == "config":
+        config_key = option["keys"][0]
+        if config_key == "fee_rate":
+            updated_fee_rate = float(value)
+        elif config_key == "slippage_bps":
+            updated_slippage_bps = float(value)
+    else:
+        raise ValueError(f"Unsupported sweep option target: {option['target']}")
+
+    return updated_strategy_params, updated_fee_rate, updated_slippage_bps
 
 
 def summarize_exit_reasons(trades: pd.DataFrame) -> dict[str, int]:
     if trades.empty or "reason" not in trades.columns:
-        return {"atr_stop_hit_exits": 0, "meanrev_exit_exits": 0, "other_exit_exits": 0}
+        return {"atr_stop_hit": 0, "meanrev_exit": 0, "other_exit": 0}
 
     reasons = trades["reason"].fillna("").astype(str)
-    atr_stop_hit_exits = int((reasons == "atr_stop_hit").sum())
-    meanrev_exit_exits = int((reasons == "meanrev_exit").sum())
-    other_exit_exits = int(len(reasons) - atr_stop_hit_exits - meanrev_exit_exits)
+    atr_stop_hit = int((reasons == "atr_stop_hit").sum())
+    meanrev_exit = int((reasons == "meanrev_exit").sum())
+    other_exit = int(len(reasons) - atr_stop_hit - meanrev_exit)
 
     return {
-        "atr_stop_hit_exits": atr_stop_hit_exits,
-        "meanrev_exit_exits": meanrev_exit_exits,
-        "other_exit_exits": other_exit_exits,
+        "atr_stop_hit": atr_stop_hit,
+        "meanrev_exit": meanrev_exit,
+        "other_exit": other_exit,
     }
 
 
@@ -239,6 +341,22 @@ def build_sweep_csv_path(prefix: str = "k") -> Path:
         if not candidate.exists():
             return candidate
     raise RuntimeError("Unable to allocate unique sweep CSV filename.")
+
+
+def build_grid_sweep_csv_path(param_a_label: str, param_b_label: str) -> Path:
+    SWEEPS_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M")
+    slug_a = sweep_file_prefix(param_a_label)
+    slug_b = sweep_file_prefix(param_b_label)
+    base = SWEEPS_DIR / f"grid_{slug_a}_{slug_b}_{stamp}.csv"
+    if not base.exists():
+        return base
+
+    for i in range(1, 100):
+        candidate = SWEEPS_DIR / f"grid_{slug_a}_{slug_b}_{stamp}_{i:02d}.csv"
+        if not candidate.exists():
+            return candidate
+    raise RuntimeError("Unable to allocate unique grid sweep CSV filename.")
 
 
 def main() -> None:
@@ -386,21 +504,98 @@ def main() -> None:
         run_name = st.text_input("Run Name (optional)", value="")
 
         st.markdown("### Parameter Sweep")
-        sweep_options = ["ATR Stop Multiplier (k)", "RSI Entry Threshold"]
-        sweep_parameter = st.selectbox(
-            "Sweep parameter",
-            options=sweep_options,
+        sweep_mode = st.radio(
+            "Sweep mode",
+            options=["Single Parameter Sweep", "Two-Parameter Grid Sweep"],
             index=0,
         )
-        if "sweep_values_input" not in st.session_state:
-            st.session_state["sweep_values_input"] = default_sweep_values(sweep_parameter)
-        if st.session_state.get("sweep_values_parameter") != sweep_parameter:
-            st.session_state["sweep_values_input"] = default_sweep_values(sweep_parameter)
-            st.session_state["sweep_values_parameter"] = sweep_parameter
-        sweep_values_raw = st.text_input(
-            "Sweep values (comma-separated)",
-            key="sweep_values_input",
-        )
+        sweep_options = list(SWEEP_OPTIONS.keys())
+
+        single_sweep_parameter = ""
+        single_sweep_values_raw = ""
+        grid_param_a = ""
+        grid_values_a_raw = ""
+        grid_param_b = ""
+        grid_values_b_raw = ""
+        grid_allow_over_limit = False
+
+        if sweep_mode == "Single Parameter Sweep":
+            single_sweep_parameter = st.selectbox(
+                "Sweep parameter",
+                options=sweep_options,
+                index=0,
+                key="single_sweep_parameter",
+            )
+            if "single_sweep_values_input" not in st.session_state:
+                st.session_state["single_sweep_values_input"] = default_sweep_values(single_sweep_parameter)
+            if st.session_state.get("single_sweep_values_parameter") != single_sweep_parameter:
+                st.session_state["single_sweep_values_input"] = default_sweep_values(single_sweep_parameter)
+                st.session_state["single_sweep_values_parameter"] = single_sweep_parameter
+            single_sweep_values_raw = st.text_input(
+                "Sweep values (comma-separated)",
+                key="single_sweep_values_input",
+            )
+        else:
+            grid_param_a = st.selectbox(
+                "Param A",
+                options=sweep_options,
+                index=sweep_options.index("Regime ATR % Threshold")
+                if "Regime ATR % Threshold" in sweep_options
+                else 0,
+                key="grid_param_a",
+            )
+            grid_param_b_options = [option for option in sweep_options if option != grid_param_a]
+            default_b = "RSI Entry Threshold" if "RSI Entry Threshold" in grid_param_b_options else grid_param_b_options[0]
+            grid_param_b = st.selectbox(
+                "Param B",
+                options=grid_param_b_options,
+                index=grid_param_b_options.index(default_b),
+                key="grid_param_b",
+            )
+
+            if "grid_values_a_input" not in st.session_state:
+                st.session_state["grid_values_a_input"] = default_sweep_values(grid_param_a)
+            if st.session_state.get("grid_values_a_parameter") != grid_param_a:
+                st.session_state["grid_values_a_input"] = default_sweep_values(grid_param_a)
+                st.session_state["grid_values_a_parameter"] = grid_param_a
+
+            if "grid_values_b_input" not in st.session_state:
+                st.session_state["grid_values_b_input"] = default_sweep_values(grid_param_b)
+            if st.session_state.get("grid_values_b_parameter") != grid_param_b:
+                st.session_state["grid_values_b_input"] = default_sweep_values(grid_param_b)
+                st.session_state["grid_values_b_parameter"] = grid_param_b
+
+            grid_values_a_raw = st.text_input(
+                "Values A (comma-separated)",
+                key="grid_values_a_input",
+            )
+            grid_values_b_raw = st.text_input(
+                "Values B (comma-separated)",
+                key="grid_values_b_input",
+            )
+
+            preview_message = "Grid combinations: invalid values"
+            try:
+                parsed_a = parse_sweep_values(
+                    grid_values_a_raw,
+                    as_int=bool(get_sweep_option(grid_param_a)["as_int"]),
+                    allow_zero=bool(get_sweep_option(grid_param_a)["allow_zero"]),
+                )
+                parsed_b = parse_sweep_values(
+                    grid_values_b_raw,
+                    as_int=bool(get_sweep_option(grid_param_b)["as_int"]),
+                    allow_zero=bool(get_sweep_option(grid_param_b)["allow_zero"]),
+                )
+                preview_message = f"Grid combinations: {len(parsed_a) * len(parsed_b)}"
+            except ValueError:
+                pass
+            st.caption(preview_message)
+
+            grid_allow_over_limit = st.checkbox(
+                "I understand (allow > 60 combinations)",
+                value=False,
+                key="grid_allow_over_limit",
+            )
 
     try:
         data = load_data(csv_mode=csv_mode, csv_path=csv_path, upload=upload)
@@ -419,7 +614,8 @@ def main() -> None:
             max_value=max_date,
         )
         run_clicked = st.button("Run Backtest", type="primary")
-        run_sweep_clicked = st.button("Run Sweep")
+        run_sweep_clicked = sweep_mode == "Single Parameter Sweep" and st.button("Run Sweep")
+        run_grid_sweep_clicked = sweep_mode == "Two-Parameter Grid Sweep" and st.button("Run Grid Sweep")
 
     if isinstance(date_range, tuple) and len(date_range) == 2:
         start_date, end_date = date_range
@@ -475,7 +671,12 @@ def main() -> None:
             st.error("No bars in selected date range")
         else:
             try:
-                sweep_values = parse_sweep_values(sweep_values_raw)
+                sweep_option = get_sweep_option(single_sweep_parameter)
+                sweep_values = parse_sweep_values(
+                    single_sweep_values_raw,
+                    as_int=bool(sweep_option["as_int"]),
+                    allow_zero=bool(sweep_option["allow_zero"]),
+                )
             except ValueError as exc:
                 st.error(f"Sweep input error: {exc}")
             else:
@@ -484,7 +685,13 @@ def main() -> None:
                 total = len(sweep_values)
 
                 for idx, sweep_value in enumerate(sweep_values, start=1):
-                    run_params = set_sweep_parameter(strategy_params, sweep_parameter, sweep_value)
+                    run_params, run_fee_rate, run_slippage_bps = apply_sweep_value(
+                        strategy_params=strategy_params,
+                        fee_rate=fee_rate,
+                        slippage_bps=slippage_bps,
+                        parameter_label=single_sweep_parameter,
+                        sweep_value=sweep_value,
+                    )
                     run_label = run_name.strip() or "sweep"
                     run_config = RunConfig(
                         symbol=symbol,
@@ -492,8 +699,8 @@ def main() -> None:
                         strategy_name=strategy_name,
                         strategy_params=run_params,
                         initial_cash=initial_cash,
-                        fee_rate=fee_rate,
-                        slippage_bps=slippage_bps,
+                        fee_rate=run_fee_rate,
+                        slippage_bps=run_slippage_bps,
                         max_leverage=max_leverage,
                         max_notional=max_notional_input if max_notional_input > 0 else None,
                         long_only=True,
@@ -507,7 +714,7 @@ def main() -> None:
                     exits = summarize_exit_reasons(result.trades)
                     row: dict[str, Any] = {
                         "run_id": run_id,
-                        "parameter": sweep_parameter,
+                        "parameter": single_sweep_parameter,
                         "sweep_value": sweep_value,
                         "total_return": result.metrics.get("total_return", 0.0),
                         "max_drawdown": result.metrics.get("max_drawdown", 0.0),
@@ -517,9 +724,9 @@ def main() -> None:
                         "exposure": result.metrics.get("exposure", 0.0),
                         **exits,
                     }
-                    if sweep_parameter == "ATR Stop Multiplier (k)":
+                    if single_sweep_parameter == "ATR Stop Multiplier (k)":
                         row["k"] = sweep_value
-                    elif sweep_parameter == "RSI Entry Threshold":
+                    elif single_sweep_parameter == "RSI Entry Threshold":
                         row["rsi_entry"] = sweep_value
                     sweep_rows.append(
                         row
@@ -538,7 +745,7 @@ def main() -> None:
                 )
                 sweep_df = sweep_df.reset_index(drop=True)
 
-                sweep_csv_path = build_sweep_csv_path(prefix=sweep_file_prefix(sweep_parameter))
+                sweep_csv_path = build_sweep_csv_path(prefix=sweep_file_prefix(single_sweep_parameter))
                 sweep_df.to_csv(sweep_csv_path, index=False)
 
                 st.session_state["sweep_results"] = {
@@ -549,6 +756,130 @@ def main() -> None:
                     f"Sweep complete: {len(sweep_df)} runs. "
                     f"Saved CSV: {sweep_csv_path}"
                 )
+
+    if run_grid_sweep_clicked:
+        if filtered_data.empty:
+            st.error("No bars in selected date range")
+        elif grid_param_a == grid_param_b:
+            st.error("Grid parameters must be different.")
+        else:
+            try:
+                option_a = get_sweep_option(grid_param_a)
+                option_b = get_sweep_option(grid_param_b)
+                values_a = parse_sweep_values(
+                    grid_values_a_raw,
+                    as_int=bool(option_a["as_int"]),
+                    allow_zero=bool(option_a["allow_zero"]),
+                )
+                values_b = parse_sweep_values(
+                    grid_values_b_raw,
+                    as_int=bool(option_b["as_int"]),
+                    allow_zero=bool(option_b["allow_zero"]),
+                )
+            except ValueError as exc:
+                st.error(f"Grid sweep input error: {exc}")
+            else:
+                combinations = len(values_a) * len(values_b)
+                if combinations > 60 and not grid_allow_over_limit:
+                    st.error(
+                        f"Grid sweep has {combinations} combinations (> 60). "
+                        "Enable 'I understand' to proceed."
+                    )
+                else:
+                    progress = st.progress(0.0, text="Starting grid sweep...")
+                    rows: list[dict[str, Any]] = []
+                    total = combinations
+                    completed = 0
+
+                    for value_a in values_a:
+                        for value_b in values_b:
+                            run_params = dict(strategy_params)
+                            run_fee_rate = fee_rate
+                            run_slippage_bps = slippage_bps
+
+                            run_params, run_fee_rate, run_slippage_bps = apply_sweep_value(
+                                strategy_params=run_params,
+                                fee_rate=run_fee_rate,
+                                slippage_bps=run_slippage_bps,
+                                parameter_label=grid_param_a,
+                                sweep_value=value_a,
+                            )
+                            run_params, run_fee_rate, run_slippage_bps = apply_sweep_value(
+                                strategy_params=run_params,
+                                fee_rate=run_fee_rate,
+                                slippage_bps=run_slippage_bps,
+                                parameter_label=grid_param_b,
+                                sweep_value=value_b,
+                            )
+
+                            run_label = run_name.strip() or "grid"
+                            run_config = RunConfig(
+                                symbol=symbol,
+                                timeframe=timeframe,
+                                strategy_name=strategy_name,
+                                strategy_params=run_params,
+                                initial_cash=initial_cash,
+                                fee_rate=run_fee_rate,
+                                slippage_bps=run_slippage_bps,
+                                max_leverage=max_leverage,
+                                max_notional=max_notional_input if max_notional_input > 0 else None,
+                                long_only=True,
+                                run_name=(
+                                    f"{run_label}_"
+                                    f"{sweep_file_prefix(grid_param_a)}{value_a:g}_"
+                                    f"{sweep_file_prefix(grid_param_b)}{value_b:g}"
+                                ),
+                            )
+                            strategy = load_strategy(strategy_name, run_params)
+                            engine = BacktestEngine(config=run_config)
+                            result = engine.run(data=filtered_data, strategy=strategy)
+                            run_id = storage.save_run(result)
+
+                            exits = summarize_exit_reasons(result.trades)
+                            rows.append(
+                                {
+                                    "run_id": run_id,
+                                    "param_a_name": grid_param_a,
+                                    "param_a_value": value_a,
+                                    "param_b_name": grid_param_b,
+                                    "param_b_value": value_b,
+                                    "total_return": result.metrics.get("total_return", 0.0),
+                                    "max_drawdown": result.metrics.get("max_drawdown", 0.0),
+                                    "sharpe_approx": result.metrics.get("sharpe", 0.0),
+                                    "win_rate": result.metrics.get("win_rate", 0.0),
+                                    "trades": int(result.metrics.get("num_trades", 0)),
+                                    "exposure": result.metrics.get("exposure", 0.0),
+                                    "atr_stop_hit": exits["atr_stop_hit"],
+                                    "meanrev_exit": exits["meanrev_exit"],
+                                }
+                            )
+
+                            completed += 1
+                            progress.progress(
+                                completed / total,
+                                text=f"Grid sweep progress: {completed}/{total} runs completed",
+                            )
+
+                    progress.empty()
+                    grid_df = pd.DataFrame(rows).sort_values(
+                        by=["sharpe_approx", "total_return"],
+                        ascending=[False, False],
+                    )
+                    grid_df = grid_df.reset_index(drop=True)
+                    grid_csv_path = build_grid_sweep_csv_path(
+                        param_a_label=grid_param_a,
+                        param_b_label=grid_param_b,
+                    )
+                    grid_df.to_csv(grid_csv_path, index=False)
+
+                    st.session_state["sweep_results"] = {
+                        "table": grid_df,
+                        "path": str(grid_csv_path),
+                    }
+                    st.success(
+                        f"Grid sweep complete: {len(grid_df)} runs. "
+                        f"Saved CSV: {grid_csv_path}"
+                    )
 
     sweep_results = st.session_state.get("sweep_results")
     if sweep_results:
