@@ -73,6 +73,7 @@ class RunConfig:
     max_leverage: float = 3.0
     max_notional: float | None = None
     long_only: bool = True
+    execution_mode: Literal["same_close", "next_open"] = "next_open"
     run_name: str = ""
 
 

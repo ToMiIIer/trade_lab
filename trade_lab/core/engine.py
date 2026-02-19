@@ -29,12 +29,18 @@ class BacktestEngine:
         risk_manager: RiskManager | None = None,
     ) -> None:
         self.config = config
+        self.execution_mode = getattr(config, "execution_mode", "next_open")
+        if self.execution_mode not in {"same_close", "next_open"}:
+            raise ValueError(
+                f"Invalid execution_mode='{self.execution_mode}'. Expected 'same_close' or 'next_open'."
+            )
         self.broker = broker or BrokerSim(fee_rate=config.fee_rate, slippage_bps=config.slippage_bps)
         self.risk_manager = risk_manager or RiskManager(
             max_leverage=config.max_leverage,
             max_notional=config.max_notional,
             long_only=config.long_only,
         )
+        self._bars_df: pd.DataFrame | None = None
 
     def run(
         self,
@@ -44,6 +50,7 @@ class BacktestEngine:
     ) -> RunResult:
         self._validate_data(data)
         bars_df = data.copy().reset_index(drop=True)
+        self._bars_df = bars_df
 
         if isinstance(strategy, str):
             strategy_obj = load_strategy(strategy, strategy_params or self.config.strategy_params)
@@ -52,6 +59,7 @@ class BacktestEngine:
         else:
             raise TypeError("strategy must be BaseStrategy instance or strategy module name")
 
+        # initialize may receive full data for precompute; on_bar must rely only on step_state['data'] slice.
         state: dict[str, Any] = {"data": bars_df, "config": self.config}
         strategy_obj.initialize(state)
 
@@ -66,16 +74,25 @@ class BacktestEngine:
         for i, row in bars_df.iterrows():
             bar = Bar.from_row(row)
             marked_equity = cash + (position.quantity * bar.close)
-            atr_stop_hit = self.risk_manager.is_stop_hit(bar, position)
+            # Defensive guard: do not trigger ATR stop on the same bar the position was entered.
+            atr_stop_hit = False
+            if position.entry_timestamp is None or pd.Timestamp(position.entry_timestamp) != bar.timestamp:
+                atr_stop_hit = self.risk_manager.is_stop_hit(bar, position)
 
             step_state = {
-                "data": bars_df,
+                # Only expose history up to current bar; no future bars in on_bar.
+                "data": bars_df.iloc[: i + 1].copy(),
                 "position": replace(position),
                 "equity": marked_equity,
                 "cash": cash,
                 "bar_index": i,
                 "atr_stop_hit": atr_stop_hit,
             }
+
+            if self.execution_mode == "next_open":
+                # For next-open execution, the decision on bar i is applied to bar i+1 open.
+                # Equity at bar i close must be recorded before executing the queued decision.
+                equity_rows.append(self._equity_row(bar=bar, cash=cash, position=position))
 
             if self.risk_manager.should_kill(step_state):
                 decision: TargetPosition | list[OrderIntent] | None = TargetPosition(
@@ -114,21 +131,8 @@ class BacktestEngine:
                     "Strategy on_bar must return None, TargetPosition, or list[OrderIntent]"
                 )
 
-            market_value = position.quantity * bar.close
-            unrealized = position.quantity * (bar.close - position.avg_entry_price)
-            equity = cash + market_value
-
-            equity_rows.append(
-                {
-                    "timestamp": bar.timestamp,
-                    "equity": equity,
-                    "cash": cash,
-                    "market_value": market_value,
-                    "unrealized": unrealized,
-                    "position_qty": position.quantity,
-                    "close": bar.close,
-                }
-            )
+            if self.execution_mode == "same_close":
+                equity_rows.append(self._equity_row(bar=bar, cash=cash, position=position))
 
         equity_curve = add_drawdown(pd.DataFrame(equity_rows))
         fills = pd.DataFrame(fill_rows)
@@ -169,10 +173,17 @@ class BacktestEngine:
         position: Position,
         open_trade: dict[str, Any] | None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None, float]:
-        current_equity = cash + (position.quantity * bar.close)
+        execution_bar = self._resolve_execution_bar(bar_index)
+        if execution_bar is None:
+            # In next_open mode there is no executable next bar (last row), so skip order execution.
+            return [], [], open_trade, cash
+        execution_price = self._resolve_execution_price(execution_bar)
+        execution_index = self._resolve_execution_index(bar_index)
+
+        current_equity = cash + (position.quantity * execution_price)
         target_qty = self.risk_manager.cap_target_qty(
             target_qty=target.target_qty,
-            price=bar.close,
+            price=execution_price,
             equity=current_equity,
         )
         delta = target_qty - position.quantity
@@ -185,17 +196,17 @@ class BacktestEngine:
             requested_qty=order_qty,
             side=side,
             current_qty=position.quantity,
-            price=bar.close,
+            price=execution_price,
             equity=current_equity,
         )
         if order_qty <= 1e-12:
             return [], [], open_trade, cash
 
         fill = self.broker.execute_market_order(
-            timestamp=bar.timestamp,
+            timestamp=execution_bar.timestamp,
             side=side,
             quantity=order_qty,
-            reference_price=bar.close,
+            reference_price=execution_price,
             reason=target.reason,
         )
 
@@ -206,7 +217,7 @@ class BacktestEngine:
             before_qty=before_qty,
             after_qty=position.quantity,
             open_trade=open_trade,
-            bar_index=bar_index,
+            bar_index=execution_index,
         )
 
         if side == "buy" and target.stop_distance is not None and position.quantity > 0:
@@ -234,26 +245,33 @@ class BacktestEngine:
         position: Position,
         open_trade: dict[str, Any] | None,
     ) -> tuple[list[dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None, float]:
+        execution_bar = self._resolve_execution_bar(bar_index)
+        if execution_bar is None:
+            # In next_open mode there is no executable next bar (last row), so skip order execution.
+            return [], [], open_trade, cash
+        execution_price = self._resolve_execution_price(execution_bar)
+        execution_index = self._resolve_execution_index(bar_index)
+
         fills: list[dict[str, Any]] = []
         trades: list[dict[str, Any]] = []
 
         for intent in intents:
-            current_equity = cash + (position.quantity * bar.close)
+            current_equity = cash + (position.quantity * execution_price)
             order_qty = self.risk_manager.cap_order_qty(
                 requested_qty=intent.quantity,
                 side=intent.side,
                 current_qty=position.quantity,
-                price=bar.close,
+                price=execution_price,
                 equity=current_equity,
             )
             if order_qty <= 1e-12:
                 continue
 
             fill = self.broker.execute_market_order(
-                timestamp=bar.timestamp,
+                timestamp=execution_bar.timestamp,
                 side=intent.side,
                 quantity=order_qty,
-                reference_price=bar.close,
+                reference_price=execution_price,
                 reason=intent.reason,
             )
 
@@ -264,7 +282,7 @@ class BacktestEngine:
                 before_qty=before_qty,
                 after_qty=position.quantity,
                 open_trade=open_trade,
-                bar_index=bar_index,
+                bar_index=execution_index,
             )
 
             fills.append(self._fill_to_row(fill, position_qty=position.quantity))
@@ -396,3 +414,36 @@ class BacktestEngine:
             raise ValueError(f"Input data missing required columns: {sorted(missing)}")
         if data.empty:
             raise ValueError("Input data is empty")
+
+    @staticmethod
+    def _equity_row(bar: Bar, cash: float, position: Position) -> dict[str, Any]:
+        market_value = position.quantity * bar.close
+        unrealized = position.quantity * (bar.close - position.avg_entry_price)
+        equity = cash + market_value
+        return {
+            "timestamp": bar.timestamp,
+            "equity": equity,
+            "cash": cash,
+            "market_value": market_value,
+            "unrealized": unrealized,
+            "position_qty": position.quantity,
+            "close": bar.close,
+        }
+
+    def _resolve_execution_bar(self, bar_index: int) -> Bar | None:
+        if self._bars_df is None:
+            raise RuntimeError("Backtest bars are not initialized")
+        execute_index = self._resolve_execution_index(bar_index)
+        if execute_index >= len(self._bars_df):
+            return None
+        return Bar.from_row(self._bars_df.iloc[execute_index])
+
+    def _resolve_execution_index(self, bar_index: int) -> int:
+        if self.execution_mode == "next_open":
+            return bar_index + 1
+        return bar_index
+
+    def _resolve_execution_price(self, execution_bar: Bar) -> float:
+        if self.execution_mode == "next_open":
+            return execution_bar.open
+        return execution_bar.close
