@@ -1,0 +1,16 @@
+# macOS
+.DS_Store
+
+# Python bytecode
+__pycache__/
+*.pyc
+
+# venv
+.venv/
+
+# Local runtime state
+trade_lab/runs.sqlite3
+
+# Local data artifacts
+trade_lab/data/*.csv
+trade_lab/data/sweeps/
