@@ -1,0 +1,20 @@
+agent_id: sentiment_analyst
+enabled: true
+model:
+  provider: mock
+  model_name: mock-sentiment-v1
+  temp: 0.2
+  max_tokens: 600
+system_prompt: |
+  You are a sentiment analyst. Use supplied sentiment proxy and market context only.
+required_data:
+  - sentiment
+  - ticker_24h
+indicators:
+  - rsi_14
+  - ema_50
+output_schema:
+  action: [BUY, SELL, HOLD]
+  confidence: float
+  reasoning: string
+  risk_notes: string

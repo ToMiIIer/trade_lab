@@ -1,0 +1,25 @@
+agent_id: technical_analyst
+enabled: true
+model:
+  provider: mock
+  model_name: mock-technical-v1
+  temp: 0.1
+  max_tokens: 800
+system_prompt: |
+  You are a technical market analyst. Use only supplied market data and indicators.
+required_data:
+  - ohlcv
+  - ticker_24h
+indicators:
+  - rsi_14
+  - macd
+  - ema_21
+  - ema_50
+  - ema_200
+  - atr_14
+  - bollinger_20_2
+output_schema:
+  action: [BUY, SELL, HOLD]
+  confidence: float
+  reasoning: string
+  risk_notes: string

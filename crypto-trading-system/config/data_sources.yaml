@@ -1,0 +1,9 @@
+binance:
+  base_url: https://api.binance.com
+  klines_endpoint: /api/v3/klines
+  ticker_endpoint: /api/v3/ticker/24hr
+  default_limit: 300
+  timeout_seconds: 10
+
+sentiment:
+  provider: stub

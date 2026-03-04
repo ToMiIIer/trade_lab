@@ -1,0 +1,9 @@
+max_position_pct: 0.10
+daily_loss_limit_pct: 0.03
+max_sl_distance_pct: 0.02
+min_conviction: 0.60
+max_open_positions: 3
+max_symbol_exposure_pct: 0.30
+min_cash_buffer_pct: 0.20
+atr_stop_multiplier: 1.5
+risk_per_trade_pct: 0.01

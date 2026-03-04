@@ -1,0 +1,4 @@
+telegram:
+  enabled_env_var: TELEGRAM_ENABLED
+  bot_token_env_var: TELEGRAM_BOT_TOKEN
+  chat_id_env_var: TELEGRAM_CHAT_ID
