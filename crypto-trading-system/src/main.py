@@ -1,1 +1,81 @@
-"""MVP module placeholder."""
+"""CLI entrypoint for Phase 1 MVP trading system."""
+
+from __future__ import annotations
+
+import argparse
+import time
+
+from src.utils.logger import setup_logging
+
+
+def run_once(pair: str, timeframe: str) -> None:
+    from src.graph.pipeline import TradingPipeline
+
+    pipeline = TradingPipeline(config_dir="config")
+    result = pipeline.run_once(pair=pair, timeframe=timeframe)
+    print(result.as_dict())
+
+
+def run_scheduler() -> None:
+    from apscheduler.schedulers.background import BackgroundScheduler
+
+    from src.utils.config_loader import ConfigLoader
+
+    loader = ConfigLoader("config")
+    scheduling = loader.load_yaml("scheduling.yaml")
+    job_cfg = dict(scheduling.get("default_job", {}))
+    cron_cfg = dict(job_cfg.get("cron", {}))
+
+    pair = str(job_cfg.get("pair", "BTC/USDC"))
+    timeframe = str(job_cfg.get("timeframe", "4h"))
+    minute = str(cron_cfg.get("minute", "0"))
+    hour = str(cron_cfg.get("hour", "*/4"))
+
+    scheduler = BackgroundScheduler()
+    scheduler.add_job(
+        lambda: run_once(pair=pair, timeframe=timeframe),
+        trigger="cron",
+        minute=minute,
+        hour=hour,
+        id="phase1_main",
+        replace_existing=True,
+    )
+    scheduler.start()
+
+    try:
+        while True:
+            time.sleep(1)
+    except KeyboardInterrupt:
+        scheduler.shutdown(wait=False)
+
+
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(description="Crypto Trading System MVP")
+    subparsers = parser.add_subparsers(dest="command", required=True)
+
+    run_once_parser = subparsers.add_parser("run-once", help="Run one trading cycle")
+    run_once_parser.add_argument("--pair", required=True, help="Trading pair, e.g. BTC/USDC")
+    run_once_parser.add_argument("--timeframe", required=True, help="Timeframe, e.g. 4h")
+
+    subparsers.add_parser("scheduler", help="Run APScheduler loop")
+    return parser
+
+
+def main() -> None:
+    setup_logging()
+    parser = build_parser()
+    args = parser.parse_args()
+
+    if args.command == "run-once":
+        run_once(pair=args.pair, timeframe=args.timeframe)
+        return
+
+    if args.command == "scheduler":
+        run_scheduler()
+        return
+
+    parser.error("unknown command")
+
+
+if __name__ == "__main__":
+    main()
